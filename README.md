@@ -17,7 +17,7 @@ Python 3, Flask, SQLite (`sqlite3`), `unittest`
 
 ## Setup
 ```bash
-git clone https://github.com/mareddydinesh12-a11y/expense-tracker-api.git
+git clone https://github.com/Dinesh-mareddy/expense-tracker-api.git
 cd expense-tracker-api
 python3 -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate

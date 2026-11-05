@@ -1,9 +1,10 @@
-"""Expense Tracker REST API - Step 1: database + add and list expenses."""
+"""Expense Tracker REST API built with Flask and SQLite."""
 import sqlite3
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 DATABASE = "expenses.db"
+REQUIRED_FIELDS = ["title", "amount", "category", "date"]
 
 
 def get_connection():
@@ -29,6 +30,25 @@ def init_db():
         )
 
 
+def validate(data):
+    """Return (clean_data, error_message). error_message is None if valid."""
+    missing = [f for f in REQUIRED_FIELDS if f not in data]
+    if missing:
+        return None, f"Missing fields: {', '.join(missing)}"
+    try:
+        amount = float(data["amount"])
+    except (TypeError, ValueError):
+        return None, "amount must be a number"
+    if amount <= 0:
+        return None, "amount must be greater than 0"
+    return {
+        "title": str(data["title"]).strip(),
+        "amount": amount,
+        "category": str(data["category"]).strip(),
+        "date": str(data["date"]).strip(),
+    }, None
+
+
 @app.route("/")
 def home():
     return jsonify({"message": "Expense Tracker API is running"})
@@ -36,36 +56,105 @@ def home():
 
 @app.route("/expenses", methods=["POST"])
 def add_expense():
-    """Add a new expense. Expects JSON: title, amount, category, date."""
-    data = request.get_json(silent=True) or {}
-    required = ["title", "amount", "category", "date"]
-    missing = [field for field in required if field not in data]
-    if missing:
-        return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
-
-    try:
-        amount = float(data["amount"])
-    except (TypeError, ValueError):
-        return jsonify({"error": "amount must be a number"}), 400
-
+    """Create an expense."""
+    clean, error = validate(request.get_json(silent=True) or {})
+    if error:
+        return jsonify({"error": error}), 400
     with get_connection() as conn:
         cursor = conn.execute(
             "INSERT INTO expenses (title, amount, category, date) VALUES (?, ?, ?, ?)",
-            (data["title"], amount, data["category"], data["date"]),
+            (clean["title"], clean["amount"], clean["category"], clean["date"]),
         )
         new_id = cursor.lastrowid
-
     return jsonify({"id": new_id, "message": "Expense added"}), 201
 
 
 @app.route("/expenses", methods=["GET"])
 def list_expenses():
-    """Return all expenses as a JSON list."""
+    """List expenses. Optional filters: ?category=Food&month=2026-11"""
+    query = "SELECT * FROM expenses WHERE 1=1"
+    params = []
+    category = request.args.get("category")
+    month = request.args.get("month")  # format YYYY-MM
+    if category:
+        query += " AND category = ?"
+        params.append(category)
+    if month:
+        query += " AND substr(date, 1, 7) = ?"
+        params.append(month)
+    query += " ORDER BY date DESC, id DESC"
     with get_connection() as conn:
-        rows = conn.execute("SELECT * FROM expenses ORDER BY date DESC").fetchall()
+        rows = conn.execute(query, params).fetchall()
     return jsonify([dict(row) for row in rows])
 
 
+@app.route("/expenses/<int:expense_id>", methods=["GET"])
+def get_expense(expense_id):
+    """Get one expense by id."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM expenses WHERE id = ?", (expense_id,)
+        ).fetchone()
+    if row is None:
+        return jsonify({"error": "Expense not found"}), 404
+    return jsonify(dict(row))
+
+
+@app.route("/expenses/<int:expense_id>", methods=["PUT"])
+def update_expense(expense_id):
+    """Replace all fields of an expense."""
+    clean, error = validate(request.get_json(silent=True) or {})
+    if error:
+        return jsonify({"error": error}), 400
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE expenses SET title = ?, amount = ?, category = ?, date = ? WHERE id = ?",
+            (clean["title"], clean["amount"], clean["category"], clean["date"], expense_id),
+        )
+    if cursor.rowcount == 0:
+        return jsonify({"error": "Expense not found"}), 404
+    return jsonify({"message": "Expense updated"})
+
+
+@app.route("/expenses/<int:expense_id>", methods=["DELETE"])
+def delete_expense(expense_id):
+    """Delete an expense."""
+    with get_connection() as conn:
+        cursor = conn.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+    if cursor.rowcount == 0:
+        return jsonify({"error": "Expense not found"}), 404
+    return jsonify({"message": "Expense deleted"})
+
+
+@app.route("/summary", methods=["GET"])
+def summary():
+    """Total spent, overall and per category. Optional filter: ?month=2026-11"""
+    month = request.args.get("month")
+    where, params = "", []
+    if month:
+        where = "WHERE substr(date, 1, 7) = ?"
+        params.append(month)
+    with get_connection() as conn:
+        total = conn.execute(
+            f"SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count FROM expenses {where}",
+            params,
+        ).fetchone()
+        rows = conn.execute(
+            f"SELECT category, SUM(amount) AS total FROM expenses {where} "
+            "GROUP BY category ORDER BY total DESC",
+            params,
+        ).fetchall()
+    return jsonify(
+        {
+            "month": month or "all",
+            "total_spent": round(total["total"], 2),
+            "expense_count": total["count"],
+            "by_category": {r["category"]: round(r["total"], 2) for r in rows},
+        }
+    )
+
+
+init_db()  # make sure the table exists whenever the app starts
+
 if __name__ == "__main__":
-    init_db()
     app.run(debug=True)
